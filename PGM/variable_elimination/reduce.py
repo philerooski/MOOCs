@@ -83,6 +83,7 @@ def calculate_marginal(event, factors, evidence, scopes, reverse_scopes, baggage
                         if f in factors: # singelton potential for event exists
                             tau = make_new_factor([tau, factors[f]])
                     tau = renormalize(tau)
+                    return tau
                 new_factor_name = "T%s" % counter
                 counter += 1
                 factors[new_factor_name] = tau
@@ -94,7 +95,6 @@ def calculate_marginal(event, factors, evidence, scopes, reverse_scopes, baggage
                 baggage.pop(event_to_sum_out)
             else: # factors left in product
                 product.append(make_new_factor(product))
-    return factors.values()
 
 def make_new_factor(product):
     f1 = product.pop()
@@ -145,7 +145,6 @@ def main():
     evidence = parse_evidence(evidence)
     marginal = calculate_marginal(event, factors, evidence, scopes, reverse_scopes, baggage)
     print(marginal)
-    return marginal
 
 if __name__ == "__main__":
     main()
