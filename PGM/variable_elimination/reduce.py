@@ -72,7 +72,7 @@ def calculate_marginal(event, factors, evidence, scopes, reverse_scopes, baggage
                                 if state[k] != r2[k]:
                                     matches = False
                             if matches:
-                                r['value'] += r2['value']
+                                r2['value'] += r['value']
                                 foundAMatch = True
                                 break
                         if not foundAMatch:
