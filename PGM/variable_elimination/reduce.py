@@ -1,6 +1,8 @@
 import argparse
 import json
-from collections import defaultdict
+from collections import defaultdict, namedtuple
+
+FactorRow = namedtuple('FactorRow', 'groundVariables, value')
 
 def read_args():
     parser = argparse.ArgumentParser()
@@ -13,16 +15,21 @@ def read_args():
     return args.graph, args.event, args.evidence
 
 def parse_graph(graph):
+    """
+    `baggage` are the elements that will make up a new factor
+    when summing out a given variable.
+    """
     with open(graph, 'r') as f:
         g = json.load(f)
     full_factors = g['graph']['factors']
-    factors = {f['name']: f['groundVariables'] for f in full_factors}
-    scopes = {k: set(factors[k][0].keys()).difference({"value"}) for k in factors}
+    factors = {f['name']:
+            [FactorRow(r, r.pop('value')) for r in f['groundVariables']] for f in full_factors}
+    scopes = defaultdict(set)
     reverse_scopes = defaultdict(set)
-    for k in factors:
-        for v in factors[k][0]: # peek at vars in scope of first row
-            if v != "value":
-                reverse_scopes[v].add(k)
+    for f in factors:
+        for v in factors[f][0].groundVariables.keys(): # peek at vars in scope of first row
+            scopes[f].add(v)
+            reverse_scopes[v].add(f)
     baggage = {}
     for var in reverse_scopes:
         concomitant = set()
@@ -60,52 +67,47 @@ def calculate_marginal(event, factors, evidence, scopes, reverse_scopes, baggage
                 f = product.pop()
                 tau = [] # factor table
                 for r in f:
-                    if not len(tau):
-                        r.pop(event_to_sum_out)
+                    foundAMatch = False
+                    for i in range(len(tau)):
+                        matches = True
+                        for k in r.groundVariables.keys():
+                            if k != event_to_sum_out and r.groundVariables[k] != tau[i].groundVariables[k]:
+                                matches = False
+                        if matches:
+                            foundAMatch = True
+                            tau[i] = FactorRow(tau[i].groundVariables, r.value + tau[i].value)
+                            break
+                    if not foundAMatch:
+                        r.groundVariables.pop(event_to_sum_out)
                         tau.append(r)
-                    else:
-                        state = {k: r[k] for k in r if k != event_to_sum_out and k != 'value'}
-                        foundAMatch = False
-                        for r2 in tau:
-                            matches = True
-                            for k in state.keys():
-                                if state[k] != r2[k]:
-                                    matches = False
-                            if matches:
-                                r2['value'] += r['value']
-                                foundAMatch = True
-                                break
-                        if not foundAMatch:
-                            r.pop(event_to_sum_out)
-                            tau.append(r)
-                if len(baggage) == 1:
+                if len(baggage) == 1: # only one term left (tau) in product
                     for f in reverse_scopes[event]:
                         if f in factors: # singelton potential for event exists
                             tau = make_new_factor([tau, factors[f]])
                     tau = renormalize(tau)
-                    return tau
+                    return tau # We've calculated the marginal!
                 new_factor_name = "T%s" % counter
                 counter += 1
                 factors[new_factor_name] = tau
-                for var in tau[0].keys():
-                    if var != 'value':
-                        reverse_scopes[var].add(new_factor_name)
-                        scopes[new_factor_name] = set()
-                        scopes[new_factor_name].add(var)
+                for var in tau[0].groundVariables.keys():
+                    reverse_scopes[var].add(new_factor_name)
+                    scopes[new_factor_name].add(var)
                 baggage.pop(event_to_sum_out)
+                for var in baggage:
+                    baggage[var].discard(event_to_sum_out)
             else: # factors left in product
                 product.append(make_new_factor(product))
 
 def make_new_factor(product):
     f1 = product.pop()
     f2 = product.pop()
-    shared_vars = set(f1[0].keys()).intersection(f2[0].keys()).difference({'value'})
+    shared_vars = set(f1[0].groundVariables.keys()).intersection(f2[0].groundVariables.keys())
     new_factor = []
     for r in f1:
         for r2 in f2:
             matches = True
             for var in shared_vars:
-                if r[var] != r2[var]:
+                if r.groundVariables[var] != r2.groundVariables[var]:
                     matches = False
             if matches:
                 new_factor.append(multiply_rows(r, r2))
@@ -116,7 +118,8 @@ def remove_noncompatible_evidence(factors, evidence):
         remove = []
         for i in range(len(factors[f])):
             for e in evidence:
-                if e in factors[f][i].keys() and factors[f][i][e] != evidence[e]:
+                if e in factors[f][i].groundVariables.keys() \
+                    and factors[f][i].groundVariables[e] != evidence[e]:
                     remove.append(i)
                     break
         for j in remove[::-1]:
@@ -124,19 +127,13 @@ def remove_noncompatible_evidence(factors, evidence):
     return factors
 
 def renormalize(factor):
-    partition_func = sum([r['value'] for r in factor])
-    for r in factor:
-        r['value'] /= partition_func
+    partition_func = sum([r.value for r in factor])
+    for i in range(len(factor)):
+        factor[i] = FactorRow(factor[i].groundVariables, factor[i].value / partition_func)
     return factor
 
 def multiply_rows(r, r2):
-    value = r['value']
-    value2 = r2['value']
-    result = {k: r[k] for k in r.keys() if k != 'value'}
-    for var in r2.keys():
-        if var != 'value':
-            result[var] = r2[var]
-    result['value'] = value * value2
+    result = FactorRow({**r.groundVariables, **r2.groundVariables}, r.value * r2.value)
     return result
 
 def main():
