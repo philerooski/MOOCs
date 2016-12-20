@@ -7,12 +7,10 @@ FactorRow = namedtuple('FactorRow', 'groundVariables, value')
 def read_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("graph", help="path to json representation of the CPD graph")
-    parser.add_argument("event",
-        help="which event to calcualate marginal probability for")
     parser.add_argument("--evidence", nargs="+",
             help="events given as evidence; formatted event=value")
     args = parser.parse_args()
-    return args.graph, args.event, args.evidence
+    return args.graph, args.evidence
 
 def parse_graph(graph):
     """
@@ -39,35 +37,67 @@ def parse_graph(graph):
         baggage[var] = concomitant
     return factors, scopes, reverse_scopes, baggage
 
-def build_cluster_graph(event, scopes, reverse_scopes, baggage):
+def build_cluster_graph(scopes, reverse_scopes, baggage):
     cluster_nodes = {} # maps cluster names to factors
-    tau_to_cluster = {} # maps cluster names to resulting product (tau)
+    tau_to_cluster = {} # maps resulting product (tau) to cluster names
     cluster_edges = defaultdict(set) # maps cluster names to clusters they have an edge to
-    baggage.pop(event)
-    counter = 0
-    while len(baggage):
-        event_to_sum_out = sorted(baggage, key=lambda x : len(baggage[x]))[0]
-        pertinent_factors = reverse_scopes[event_to_sum_out]
-        for k in reverse_scopes:
-            reverse_scopes[k] = reverse_scopes[k].difference(pertinent_factors)
-        cluster_name = "C%s" % counter
-        tau_name = "T%s" % counter
-        tau_to_cluster[tau_name] = cluster_name
-        cluster_nodes[cluster_name] = pertinent_factors.difference(tau_to_cluster.keys())
-        tau_scope = set()
-        for f in pertinent_factors:
-            tau_scope = tau_scope.union(scopes[f])
-            if f in tau_to_cluster:
-                cluster_edges[cluster_name].add(tau_to_cluster[f])
-                cluster_edges[tau_to_cluster[f]].add(cluster_name)
-        for v in tau_scope.difference([event_to_sum_out] + [event]):
-            scopes[tau_name].add(v)
-            reverse_scopes[v].add(tau_name)
-            baggage[v] = baggage[v].union(tau_scope)
-            baggage[v] = baggage[v].difference([event_to_sum_out])
-        baggage.pop(event_to_sum_out)
-        counter += 1
     return cluster_nodes, cluster_edges
+
+def make_clusters(factors, cluster_nodes):
+    clusters = {} # maps cluster names to resulting factors
+    for c in cluster_nodes:
+        product = [factors[f] for f in cluster_nodes[c]]
+        while len(product) != 1:
+            product.append(make_new_factor(product))
+        clusters[c] = product.pop()
+    return clusters
+
+def propogate(clusters, cluster_edges):
+    ordering = sorted(cluster_edges, key=lambda c : len(cluster_edges[c]))
+    messages = {} # maps (from_cluster, to_cluster) to a factor
+    upstream_clusters = set() # clusters that have already passed their message this sweep
+    for c in ordering: # pass messages to appropriate neighbors
+        print("calculating message of", c)
+        c_scope = set(clusters[c][0].groundVariables.keys())
+        print("c_scope", c_scope)
+        upstream_neighbors = cluster_edges[c].intersection(upstream_clusters)
+        print("upstream_neighbors", upstream_neighbors)
+        downstream_neighbors = cluster_edges[c].difference(upstream_clusters)
+        print("downstream_neighbors", downstream_neighbors)
+        product = [messages[(n, c)] for n in upstream_neighbors]
+        product.append(clusters[c])
+        print("product", product)
+        while len(product) != 1:
+            product.append(make_new_factor(product))
+        for n in downstream_neighbors:
+            n_scope = clusters[n][0].groundVariables.keys()
+            print("n_scope", n_scope)
+            sepset = c_scope.intersection(n_scope) # sum out everything but these
+            print('sepset', sepset)
+            f = product.pop()
+            messages[(c, n)] = sum_out(f, sepset)
+            print('messages[(c, n)]', messages[(c, n)])
+        upstream_clusters.add(c)
+
+def sum_out(factor, vars_to_sum_out):
+    """ sum out of a factor every var_to_sum_out """
+    result = []
+    for r in factor:
+        foundAMatch = False
+        for i in range(len(result)):
+            matches = True
+            for k in r.groundVariables.keys():
+                if not k in vars_to_sum_out and r.groundVariables[k] != result[i].groundVariables[k]:
+                    matches = False
+            if matches:
+                foundAMatch = True
+                result[i] = FactorRow(result[i].groundVariables, r.value + result[i].value)
+                break
+        if not foundAMatch:
+            for var in vars_to_sum_out:
+                r.groundVariables.pop(var)
+            result.append(r)
+    return result
 
 def parse_evidence(evidence):
     if evidence:
@@ -115,10 +145,13 @@ def multiply_rows(r, r2):
     return result
 
 def main():
-    graph, event, evidence = read_args()
+    graph, evidence = read_args()
     factors, scopes, reverse_scopes, baggage = parse_graph(graph)
     evidence = parse_evidence(evidence)
-    cluster_nodes, cluster_edges = build_cluster_graph(event, scopes, reverse_scopes, baggage)
+    cluster_nodes, cluster_edges = build_cluster_graph(scopes, reverse_scopes, baggage)
+    print("clique tree", cluster_nodes, cluster_edges, "\n")
+    #clusters = make_clusters(factors, cluster_nodes)
+    #propogate(clusters, cluster_edges)
 
 if __name__ == "__main__":
     main()
