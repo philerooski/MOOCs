@@ -41,6 +41,43 @@ def build_cluster_graph(scopes, reverse_scopes, baggage):
     cluster_nodes = {} # maps cluster names to factors
     tau_to_cluster = {} # maps resulting product (tau) to cluster names
     cluster_edges = defaultdict(set) # maps cluster names to clusters they have an edge to
+    counter = 0
+    while len(baggage):
+        # create cluster and resulting tau
+        cluster_name = "C%s" % counter
+        tau_name = "T%s" % counter
+        tau_to_cluster[tau_name] = cluster_name
+        # pick the easiest variable to eliminate
+        to_eliminate = sorted(baggage, key=lambda x : len(baggage[x]))[0]
+        # get all factors that contain that variable
+        pertinent_factors = reverse_scopes[to_eliminate]
+        # assign these (non-tau) factors to the cluster
+        cluster_nodes[cluster_name] = pertinent_factors.difference(tau_to_cluster.keys())
+        tau_scope = set()
+        for f in pertinent_factors:
+            # get the scope of tau by "multiplying" all pertinent factors together
+            tau_scope = tau_scope.union(scopes[f])
+            # if this factor is a tau, draw an edge from this cluster
+            # to the cluster that created said tau
+            if f in tau_to_cluster.keys():
+                cluster_edges[cluster_name].add(tau_to_cluster[f])
+                cluster_edges[tau_to_cluster[f]].add(cluster_name)
+            # remove factors that became tau
+            scopes.pop(f)
+        # sum out the variable to_eliminate
+        tau_scope = tau_scope.difference(to_eliminate)
+        # add tau to remaining factors
+        scopes[tau_name] = tau_scope
+        for var in tau_scope:
+            reverse_scopes[var].add(tau_name)
+            # remove the now non-existent factors
+            reverse_scopes[var] = reverse_scopes[var].difference(pertinent_factors)
+            # recalibrate baggage
+            baggage[var] = baggage[var].union(tau_scope)
+            baggage[var] = baggage[var].difference([to_eliminate])
+        # remove variable from baggage
+        baggage.pop(to_eliminate)
+        counter += 1
     return cluster_nodes, cluster_edges
 
 def make_clusters(factors, cluster_nodes):
