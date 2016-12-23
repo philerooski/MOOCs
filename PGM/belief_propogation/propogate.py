@@ -62,8 +62,6 @@ def build_cluster_graph(scopes, reverse_scopes, baggage):
             if f in tau_to_cluster.keys():
                 cluster_edges[cluster_name].add(tau_to_cluster[f])
                 cluster_edges[tau_to_cluster[f]].add(cluster_name)
-            # remove factors that became tau
-            scopes.pop(f)
         # sum out the variable to_eliminate
         tau_scope = tau_scope.difference(to_eliminate)
         # add tau to remaining factors
@@ -78,6 +76,23 @@ def build_cluster_graph(scopes, reverse_scopes, baggage):
         # remove variable from baggage
         baggage.pop(to_eliminate)
         counter += 1
+    # merge clusters that are sub/supersets of each other's scopes
+    subsets = {}
+    for c1 in list(cluster_nodes.keys()):
+        scope1 = set().union(*[scopes[f] for f in cluster_nodes[c1]])
+        for c2 in cluster_edges[c1]:
+            scope2 = set().union(*[scopes[f] for f in cluster_nodes[c2]])
+            if c1 != c2 and scope1.issubset(scope2):
+                subsets[c1] = c2
+                # push factors from c1 into its superset c2
+                cluster_nodes[c2] = cluster_nodes[c2].union(cluster_nodes.pop(c1))
+                # redirect all edges to/from c1 to c2 (except edge from c1 to c2)
+                sub_edges = cluster_edges.pop(c1)
+                cluster_edges[c2] = cluster_edges[c2].union(sub_edges).difference([c2])
+                for c in sub_edges:
+                    cluster_edges[c].remove(c1)
+                    if c != c2: cluster_edges[c].add(c2)
+                break
     return cluster_nodes, cluster_edges
 
 def make_clusters(factors, cluster_nodes):
@@ -187,7 +202,7 @@ def main():
     evidence = parse_evidence(evidence)
     cluster_nodes, cluster_edges = build_cluster_graph(scopes, reverse_scopes, baggage)
     print("clique tree", cluster_nodes, cluster_edges, "\n")
-    #clusters = make_clusters(factors, cluster_nodes)
+    clusters = make_clusters(factors, cluster_nodes)
     #propogate(clusters, cluster_edges)
 
 if __name__ == "__main__":
