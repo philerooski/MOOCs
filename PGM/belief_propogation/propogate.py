@@ -1,6 +1,7 @@
 import argparse
 import json
 from collections import defaultdict, namedtuple
+from copy import deepcopy
 
 FactorRow = namedtuple('FactorRow', 'groundVariables, value')
 
@@ -105,31 +106,75 @@ def make_clusters(factors, cluster_nodes):
     return clusters
 
 def propogate(clusters, cluster_edges):
-    ordering = sorted(cluster_edges, key=lambda c : len(cluster_edges[c]))
     messages = {} # maps (from_cluster, to_cluster) to a factor
     upstream_clusters = set() # clusters that have already passed their message this sweep
-    for c in ordering: # pass messages to appropriate neighbors
-        print("calculating message of", c)
-        c_scope = set(clusters[c][0].groundVariables.keys())
-        print("c_scope", c_scope)
-        upstream_neighbors = cluster_edges[c].intersection(upstream_clusters)
-        print("upstream_neighbors", upstream_neighbors)
-        downstream_neighbors = cluster_edges[c].difference(upstream_clusters)
-        print("downstream_neighbors", downstream_neighbors)
-        product = [messages[(n, c)] for n in upstream_neighbors]
-        product.append(clusters[c])
-        print("product", product)
-        while len(product) != 1:
-            product.append(make_new_factor(product))
-        for n in downstream_neighbors:
-            n_scope = clusters[n][0].groundVariables.keys()
-            print("n_scope", n_scope)
-            sepset = c_scope.intersection(n_scope) # sum out everything but these
-            print('sepset', sepset)
+    neighbor_count = {c: len(cluster_edges[c]) for c in clusters}
+    ordering = []
+    while len(neighbor_count): # pass messages to appropriate neighbors
+        leaves = [c for c in neighbor_count if neighbor_count[c] == 1]
+        if set(leaves) == set(clusters.keys()): # all (two) clusters are a leaf
+            leaves = leaves[:-1]
+        for c in leaves:
+            ordering.append(c)
+            c_scope = set(clusters[c][0].groundVariables.keys())
+            upstream_neighbors = cluster_edges[c].intersection(upstream_clusters)
+            # only one downstream_neighbor, since c is a leaf
+            downstream_neighbor = cluster_edges[c].difference(upstream_clusters).pop()
+            product = [deepcopy(messages[(n, c)]) for n in upstream_neighbors] # product of messages received
+            product.append(deepcopy(clusters[c])) # psi (deepcopy VERY IMPORTANT, else modifies `clusters`)
+            while len(product) != 1:
+                product.append(make_new_factor(product))
+            n_scope = clusters[downstream_neighbor][0].groundVariables.keys()
             f = product.pop()
-            messages[(c, n)] = sum_out(f, sepset)
-            print('messages[(c, n)]', messages[(c, n)])
+            messages[(c, downstream_neighbor)] = sum_out(f, c_scope.difference(n_scope))
+            upstream_clusters.add(c)
+            if neighbor_count[downstream_neighbor] == 1:
+                ordering.append(downstream_neighbor)
+                neighbor_count.pop(downstream_neighbor)
+            else:
+                neighbor_count[downstream_neighbor] -= 1
+            if neighbor_count[c] == 1:
+                neighbor_count.pop(c)
+            else:
+                neighbor_count[c] -= 1
+    # pass messages in opposite order
+    upstream_clusters = set()
+    for c in ordering[::-1]:
+        c_scope = set(clusters[c][0].groundVariables.keys())
+        downstream_neighbors = cluster_edges[c].difference(upstream_clusters)
+        for n in downstream_neighbors:
+            # product of messages received minus messages from the receiving cluster
+            product = [deepcopy(messages[(n_, c)]) for n_ in downstream_neighbors if n_ != n]
+            product.append(deepcopy(clusters[c])) # psi (deepcopy VERY IMPORTANT, else modifies `clusters`)
+            while len(product) != 1:
+                product.append(make_new_factor(product))
+            n_scope = clusters[n][0].groundVariables.keys()
+            f = product.pop()
+            messages[(c, n)] = sum_out(f, c_scope.difference(n_scope))
         upstream_clusters.add(c)
+    return messages
+
+def get_beliefs(clusters, cluster_edges, messages):
+    beliefs = {}
+    for c in clusters:
+        product = [messages[(n, c)] for n in cluster_edges[c]] + [clusters[c]]
+        while len(product) > 1:
+            product.append(make_new_factor(product))
+        beliefs[c] = product.pop()
+    return beliefs
+
+def get_marginals(beliefs):
+    result = {} # maps variables to an ordered sequence of probabilities
+    for c in beliefs:
+        for v in beliefs[c][0].groundVariables:
+            if not v in result: # we don't have these marginals yet
+                marginals = sum_out(deepcopy(beliefs[c]), set(beliefs[c][0].groundVariables.keys()).difference([v]))
+                marginals = renormalize(marginals)
+                probabilities = []
+                for r in sorted(marginals, key = lambda r : r.groundVariables.keys()):
+                    probabilities.append(r.value)
+                result[v] = tuple(probabilities)
+    return result
 
 def sum_out(factor, vars_to_sum_out):
     """ sum out of a factor every var_to_sum_out """
@@ -201,9 +246,11 @@ def main():
     factors, scopes, reverse_scopes, baggage = parse_graph(graph)
     evidence = parse_evidence(evidence)
     cluster_nodes, cluster_edges = build_cluster_graph(scopes, reverse_scopes, baggage)
-    print("clique tree", cluster_nodes, cluster_edges, "\n")
     clusters = make_clusters(factors, cluster_nodes)
-    #propogate(clusters, cluster_edges)
+    messages = propogate(clusters, cluster_edges)
+    beliefs = get_beliefs(clusters, cluster_edges, messages)
+    marginals = get_marginals(beliefs)
+    print(marginals)
 
 if __name__ == "__main__":
     main()
